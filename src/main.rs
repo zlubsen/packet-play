@@ -1,9 +1,9 @@
 use std::fs::File;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[clap(name = "Packet-Play")]
+#[clap(name = "packet-play")]
 #[clap(author, version, about,long_about = None)]
 struct Cli {
     file: String,
@@ -14,5 +14,5 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
     println!("file {}", cli.file);
-    println!("dest {}", cli.destination.unwrap());
+    println!("dest {}", cli.destination.unwrap_or(SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(),3000)));
 }
