@@ -11,5 +11,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bytes = "1.1.0"
 clap =  { version = "3.1.12", features = ["derive"] }
+nom = "7.1.1"
 rustyline = "9.1.2"
