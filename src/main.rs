@@ -7,7 +7,7 @@ use std::process::exit;
 use std::time::{Duration, Instant};
 use clap::Parser;
 use log::{info, error, trace};
-use crate::model::Recording::PCAP;
+use crate::model::{ETHERNET_HEADER_LENGTH, IP_HEADER_LENGTH, UDP_HEADER_LENGTH};
 
 const DEFAULT_DEST_PORT : u16 = 3000;
 const DEFAULT_SRC_PORT : u16 = 3000;
@@ -19,10 +19,12 @@ const DEFAULT_TTL : u32 = 1;
 struct Cli {
     file: String,
     #[clap(parse(try_from_str))]
-    destination: Option<SocketAddr>,
-    #[clap(short = 's', long = "source")]
-    source_port: Option<u16>,
-    ttl: Option<u32>,
+    #[clap(short, long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::BROADCAST),DEFAULT_DEST_PORT))]
+    destination: SocketAddr,
+    #[clap(short = 's', long = "source", default_value_t = DEFAULT_SRC_PORT)]
+    source_port: u16,
+    #[clap(short, long, default_value_t = DEFAULT_TTL)]
+    ttl: u32,
 }
 
 fn main() {
@@ -32,20 +34,32 @@ fn main() {
     env_logger::init();
 
     let cli = Cli::parse();
-    let filename : String = cli.file;
-    let destination = cli.destination.unwrap_or(SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(),3000));
-    let ttl : u32 = cli.ttl.unwrap_or(DEFAULT_TTL);
 
-    info!("Loading file: {filename}");
-    info!("Replaying to destination: {destination}");
+    info!("Using file: {}", cli.file);
+    info!("Replaying to destination: {:?}", cli.destination);
+    // if let Some(destination) = cli.destination {
+    //     info!("Replaying to destination: {:?}", destination);
+    // } else {
+    //     info!("Replaying to default destination ({})", IpAddr::V4(Ipv4Addr::BROADCAST));
+    // }
 
-    let file_path = std::path::Path::new(filename.as_str());
+    let file_path = std::path::Path::new(cli.file.as_str());
     if !file_path.is_file() || !file_path.exists() {
-        error!("Provided file {filename} is not a file or does not exist.");
+        error!("Provided path {} is not a file or does not exist.", {cli.file});
         exit(1);
     };
 
-    let player = Player::new(filename).destination(destination).ttl(ttl);
+    // TODO tidy up... fix builder
+    let player = Player::new(cli.file).destination(cli.destination).source_port(cli.source_port).ttl(cli.ttl);
+    // let player = if let Some(destination) = cli.destination {
+    //     player.destination(destination)
+    // } else { player };
+    // let player = if let Some(source_port) = cli.source_port {
+    //     player.source_port(source_port)
+    // } else { player };
+    // let player = if let Some(ttl) = cli.ttl {
+    //     player.ttl(ttl)
+    // } else {player};
     player.play();
 }
 
@@ -67,38 +81,62 @@ impl Player {
     }
 
     pub fn file(self, file_path: String) -> Self {
-        Self {
-            file_path,
-            ..self
-        }
+        // if file_path.is_some() {
+        //     let file_path = file_path.unwrap();
+            Self {
+                file_path,
+                ..self
+            }
+        // } else { self }
     }
 
     pub fn destination(self, destination: SocketAddr) -> Self {
-        Self {
-            destination,
-            ..self
-        }
+        // if destination.is_some() {
+        //     let destination = destination.unwrap();
+            Self {
+                destination,
+                ..self
+            }
+        // } else { self }
+    }
+
+    pub fn source_port(self, source_port: u16) -> Self {
+        // if source_port.is_some() {
+        //     let source_port = source_port.unwrap();
+            Self {
+                source_port,
+                ..self
+            }
+        // } else { self }
     }
 
     pub fn ttl(self, ttl: u32) -> Self {
-        Self {
-            ttl,
-            ..self
-        }
+        // if ttl.is_some() {
+        //     let ttl = ttl.unwrap();
+            Self {
+                ttl,
+                ..self
+            }
+        // } else { self }
     }
 
     pub fn play(&self) {
-        let socket = UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], self.source_port)),).expect(format!("Failed to bind socket {:?}", self.destination).as_str());
-        socket.set_broadcast(true);
-        socket.set_ttl(self.ttl);
-        let mut file = File::open(self.file_path.clone()).unwrap();
+        let socket = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), self.source_port)).expect(format!("Failed to bind socket to port {:?}", self.source_port).as_str());
+        socket.set_broadcast(true).expect("Failed to set socket SO_BROADCAST option.");
+        socket.set_ttl(self.ttl).expect("Failed to set socket TTL value");
+
+        let file = File::open(self.file_path.clone()).unwrap();
         let recording = model::pcap::Pcap::try_from(file);
+
         if let Ok(recording) = recording {
-            info!("ready to play: {:?}", recording.header);
+            trace!("Ready to play: {:?}", recording.header);
+            info!("Replaying {} packets", recording.packets.len());
             let start_time = recording.packets.first().unwrap().ts_secs;
+            let strip_headers_index = (ETHERNET_HEADER_LENGTH+IP_HEADER_LENGTH+UDP_HEADER_LENGTH+1) as usize;
+
             for packet in recording.packets {
-                trace!("packet - secs: {} - len: {}", packet.ts_secs, packet.captured_packet_length);
-                socket.send_to(&packet.packet_data.as_slice()[..8], self.destination).expect("Could not send packet");
+                let bytes_send = socket.send_to(&packet.packet_data.as_slice()[strip_headers_index..], self.destination).expect("Could not send packet");
+                trace!("bytes transmitted: {bytes_send}");
                 std::thread::sleep(Duration::from_millis(500));
             }
         } else {

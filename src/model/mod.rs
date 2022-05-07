@@ -4,10 +4,12 @@ use nom::number::complete::be_u16;
 use crate::model::pcap::Pcap;
 use crate::model::pcapng::PcapNG;
 
-pub mod pcap;
-pub mod pcapng;
+pub(crate) mod pcap;
+pub(crate) mod pcapng;
 
-const UDP_HEADER_LENGTH : u16 = 8;
+pub(crate) const ETHERNET_HEADER_LENGTH : u16 = 13;
+pub(crate) const IP_HEADER_LENGTH : u16 = 20;
+pub(crate) const UDP_HEADER_LENGTH : u16 = 8;
 
 #[derive(Debug)]
 pub enum Errors {

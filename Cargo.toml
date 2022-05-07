@@ -3,7 +3,7 @@ name = "packet-play"
 authors = ["Zeeger Lubsen <zeeger@lubsen.eu>"]
 version = "0.1.0"
 description = """
-CLI tool to replay .pcap and .pcapng files.
+CLI tool to replay .pcap and .pcapng files. Assumes captured packets were recorded as UDP over IP/Ethernet.
 """
 readme = "README.md"
 edition = "2021"
