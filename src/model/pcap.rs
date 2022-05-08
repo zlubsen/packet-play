@@ -7,7 +7,7 @@ use nom::IResult;
 use nom::multi::many1;
 use nom::number::complete::{le_u32, u16, u32};
 use nom::number::Endianness;
-use crate::model::{Errors, ETHERNET_HEADER_LENGTH, IP_HEADER_LENGTH, udp_header, UDP_HEADER_LENGTH};
+use crate::model::{Errors};
 
 #[derive(Debug)]
 pub struct Pcap {
@@ -28,15 +28,15 @@ pub struct PcapFileHeader {
 
 #[derive(Debug)]
 pub enum PcapMagicNumber {
-    LeMillis,     // 0xA1B2C3D4 - Little Endian - time fraction in millis
-    BeNanos,      // 0xA1B23C4D - Big Endian - time fraction in nanos
+    LeMicros,     // 0xA1B2C3D4 - Little Endian - time fraction in micro seconds
+    BeNanos,      // 0xA1B23C4D - Big Endian - time fraction in nano seconds
 }
 
 impl From<u32> for PcapMagicNumber {
     fn from(value: u32) -> Self {
         match value {
             0xA1B23C4D => PcapMagicNumber::BeNanos,
-            0xA1B2C3D4 | _ => PcapMagicNumber::LeMillis,
+            0xA1B2C3D4 | _ => PcapMagicNumber::LeMicros,
         }
     }
 }
@@ -61,21 +61,17 @@ impl TryFrom<File> for Pcap {
         match parse_pcap_file(&buf) {
             Ok((_input, pcap)) => { Ok(pcap) }
             Err(_err) => {
-                // trace!("{err}");
                 Err(Errors::ParsePcapError) }
         }
     }
 }
 
 fn parse_pcap_file(input: &[u8]) -> IResult<&[u8], Pcap> {
-    trace!("parse the file");
     let (input, magic_number_as_le) = peek(le_u32)(input)?;
     let endianness = determine_endianness(magic_number_as_le);
 
     let (input, header) = pcap_header(endianness)(input)?;
-    trace!("parsed the header");
     let (input, packets) = many1(pcap_packet_record(endianness))(input)?;
-    trace!("parsed the packets");
     Ok((input, Pcap {
         header,
         packets,
@@ -113,9 +109,10 @@ fn pcap_packet_record(endianness: Endianness) -> impl Fn(&[u8]) -> IResult<&[u8]
         let (input, ts_secs_fraction) = u32(endianness)(input)?;
         let (input, captured_packet_length) = u32(endianness)(input)?;
         let (input, original_packet_length) = u32(endianness)(input)?;
+        // TODO also parse the Ethernet and IP headers if we need to support other data link and network protocols
         // let (input, _ethernet_header) = take(ETHERNET_HEADER_LENGTH)(input)?;
         // let (input, _ip_header) = take(IP_HEADER_LENGTH)(input)?;
-        // // TODO also parse the UDP header if needed to know what the original ports and addresses were.
+        // TODO also parse the UDP header if needed to know what the original ports and addresses were.
         // let (input, _udp_header) = take(UDP_HEADER_LENGTH)(input)?;
         // trace!("captured packet length: {captured_packet_length}");
         // trace!("original packet length: {original_packet_length}");

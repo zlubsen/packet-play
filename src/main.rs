@@ -4,10 +4,11 @@ use std::env;
 use std::fs::File;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::process::exit;
-use std::time::{Duration, Instant};
+use std::time::{Duration};
 use clap::Parser;
 use log::{info, error, trace};
 use crate::model::{ETHERNET_HEADER_LENGTH, IP_HEADER_LENGTH, UDP_HEADER_LENGTH};
+use crate::model::pcap::{PcapMagicNumber, PcapPacketRecord};
 
 const DEFAULT_DEST_PORT : u16 = 3000;
 const DEFAULT_SRC_PORT : u16 = 3000;
@@ -37,11 +38,6 @@ fn main() {
 
     info!("Using file: {}", cli.file);
     info!("Replaying to destination: {:?}", cli.destination);
-    // if let Some(destination) = cli.destination {
-    //     info!("Replaying to destination: {:?}", destination);
-    // } else {
-    //     info!("Replaying to default destination ({})", IpAddr::V4(Ipv4Addr::BROADCAST));
-    // }
 
     let file_path = std::path::Path::new(cli.file.as_str());
     if !file_path.is_file() || !file_path.exists() {
@@ -49,17 +45,7 @@ fn main() {
         exit(1);
     };
 
-    // TODO tidy up... fix builder
     let player = Player::new(cli.file).destination(cli.destination).source_port(cli.source_port).ttl(cli.ttl);
-    // let player = if let Some(destination) = cli.destination {
-    //     player.destination(destination)
-    // } else { player };
-    // let player = if let Some(source_port) = cli.source_port {
-    //     player.source_port(source_port)
-    // } else { player };
-    // let player = if let Some(ttl) = cli.ttl {
-    //     player.ttl(ttl)
-    // } else {player};
     player.play();
 }
 
@@ -81,43 +67,31 @@ impl Player {
     }
 
     pub fn file(self, file_path: String) -> Self {
-        // if file_path.is_some() {
-        //     let file_path = file_path.unwrap();
-            Self {
-                file_path,
-                ..self
-            }
-        // } else { self }
+        Self {
+            file_path,
+            ..self
+        }
     }
 
     pub fn destination(self, destination: SocketAddr) -> Self {
-        // if destination.is_some() {
-        //     let destination = destination.unwrap();
-            Self {
-                destination,
-                ..self
-            }
-        // } else { self }
+        Self {
+            destination,
+            ..self
+        }
     }
 
     pub fn source_port(self, source_port: u16) -> Self {
-        // if source_port.is_some() {
-        //     let source_port = source_port.unwrap();
-            Self {
-                source_port,
-                ..self
-            }
-        // } else { self }
+        Self {
+            source_port,
+            ..self
+        }
     }
 
     pub fn ttl(self, ttl: u32) -> Self {
-        // if ttl.is_some() {
-        //     let ttl = ttl.unwrap();
-            Self {
-                ttl,
-                ..self
-            }
-        // } else { self }
+        Self {
+            ttl,
+            ..self
+        }
     }
 
     pub fn play(&self) {
@@ -131,17 +105,37 @@ impl Player {
         if let Ok(recording) = recording {
             trace!("Ready to play: {:?}", recording.header);
             info!("Replaying {} packets", recording.packets.len());
-            let start_time = recording.packets.first().unwrap().ts_secs;
+            let mut previous_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.first().unwrap());
             let strip_headers_index = (ETHERNET_HEADER_LENGTH+IP_HEADER_LENGTH+UDP_HEADER_LENGTH+1) as usize;
 
             for packet in recording.packets {
-                let bytes_send = socket.send_to(&packet.packet_data.as_slice()[strip_headers_index..], self.destination).expect("Could not send packet");
-                trace!("bytes transmitted: {bytes_send}");
-                std::thread::sleep(Duration::from_millis(500));
+                let current_ts = duration_from_timestamp(&recording.header.magic_number, &packet);
+                let diff = current_ts - previous_ts;
+                std::thread::sleep(diff);
+                previous_ts = current_ts;
+                let _bytes_send = socket.send_to(
+                    &packet.packet_data.as_slice()[strip_headers_index..],
+                    self.destination)
+                    .expect("Could not send packet");
             }
         } else {
             let error = recording.unwrap_err();
             error!("Cannot play recording, because: {:?}", error);
         }
     }
+}
+
+fn duration_from_timestamp(mode: &PcapMagicNumber, packet: &PcapPacketRecord) -> Duration {
+    let (fraction, overflow) = match mode {
+        PcapMagicNumber::LeMicros => {
+            packet.ts_secs_fraction.overflowing_mul(1_000)
+        }
+        PcapMagicNumber::BeNanos => { (packet.ts_secs_fraction, false) }
+    };
+    let seconds = if overflow {
+        packet.ts_secs + 1
+    } else {
+        packet.ts_secs
+    } as u64;
+    Duration::new(seconds, fraction)
 }
