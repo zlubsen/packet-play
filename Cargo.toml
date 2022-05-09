@@ -16,4 +16,5 @@ clap =  { version = "3.1.12", features = ["derive"] }
 env_logger = "0.9.0"
 log = "0.4.16"
 nom = "7.1.1"
-rustyline = "9.1.2"
+indicatif = "0.16.2"
+dialoguer = "0.10.0"

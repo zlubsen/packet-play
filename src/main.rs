@@ -6,6 +6,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::process::exit;
 use std::time::{Duration};
 use clap::Parser;
+use dialoguer::Confirm;
+use indicatif::{FormattedDuration, ProgressBar, ProgressStyle};
 use log::{info, error, trace};
 use crate::model::{ETHERNET_HEADER_LENGTH, IP_HEADER_LENGTH, UDP_HEADER_LENGTH};
 use crate::model::pcap::{PcapMagicNumber, PcapPacketRecord};
@@ -103,21 +105,38 @@ impl Player {
         let recording = model::pcap::Pcap::try_from(file);
 
         if let Ok(recording) = recording {
-            trace!("Ready to play: {:?}", recording.header);
-            info!("Replaying {} packets", recording.packets.len());
+            trace!("{:?}", recording.header);
+
+            match Confirm::new().with_prompt("Play recording?").interact_opt().unwrap() {
+                None | Some(false) => { info!("Ok, bye."); exit(0); }
+                Some(true) => { info!("Replaying."); }
+            }
+
+            let bar = ProgressBar::new(recording.packets.len() as u64);
+            bar.set_style(ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
+                .progress_chars("#>-"));
+
             let mut previous_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.first().unwrap());
+            let last_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.last().unwrap());
+            let total_duration = FormattedDuration(last_ts - previous_ts);
+            info!("Recording duration {}", total_duration);
+
             let strip_headers_index = (ETHERNET_HEADER_LENGTH+IP_HEADER_LENGTH+UDP_HEADER_LENGTH+1) as usize;
 
-            for packet in recording.packets {
+            for (i, packet) in recording.packets.iter().enumerate() {
                 let current_ts = duration_from_timestamp(&recording.header.magic_number, &packet);
                 let diff = current_ts - previous_ts;
                 std::thread::sleep(diff);
                 previous_ts = current_ts;
+                bar.set_position(i as u64);
                 let _bytes_send = socket.send_to(
                     &packet.packet_data.as_slice()[strip_headers_index..],
                     self.destination)
                     .expect("Could not send packet");
             }
+
+            bar.finish_with_message("Recording finished.");
         } else {
             let error = recording.unwrap_err();
             error!("Cannot play recording, because: {:?}", error);
@@ -139,3 +158,6 @@ fn duration_from_timestamp(mode: &PcapMagicNumber, packet: &PcapPacketRecord) ->
     } as u64;
     Duration::new(seconds, fraction)
 }
+
+// TODO controls like pause, stop, rewind (put recording in separate thread?), Player state machine
+// TODO dialog to replay at finish of replaying
