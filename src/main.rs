@@ -7,6 +7,7 @@ use std::process::exit;
 use std::time::{Duration};
 use clap::Parser;
 use dialoguer::Confirm;
+use dialoguer::console::Term;
 use indicatif::{FormattedDuration, ProgressBar, ProgressStyle};
 use log::{info, error, trace};
 use crate::model::{ETHERNET_HEADER_LENGTH, IP_HEADER_LENGTH, UDP_HEADER_LENGTH};
@@ -107,11 +108,6 @@ impl Player {
         if let Ok(recording) = recording {
             trace!("{:?}", recording.header);
 
-            match Confirm::new().with_prompt("Play recording?").interact_opt().unwrap() {
-                None | Some(false) => { info!("Ok, bye."); exit(0); }
-                Some(true) => { info!("Replaying."); }
-            }
-
             let bar = ProgressBar::new(recording.packets.len() as u64);
             bar.set_style(ProgressStyle::default_bar()
                 .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
@@ -123,6 +119,11 @@ impl Player {
             info!("Recording duration {}", total_duration);
 
             let strip_headers_index = (ETHERNET_HEADER_LENGTH+IP_HEADER_LENGTH+UDP_HEADER_LENGTH+1) as usize;
+
+            match Confirm::new().with_prompt("Play recording?").interact_on_opt(&Term::stdout()).unwrap() {
+                None | Some(false) => { info!("Ok, bye."); exit(0); }
+                Some(true) => { }
+            }
 
             for (i, packet) in recording.packets.iter().enumerate() {
                 let current_ts = duration_from_timestamp(&recording.header.magic_number, &packet);
