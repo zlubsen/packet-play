@@ -1,21 +1,24 @@
 mod model;
+mod player;
+mod constants;
 
-use std::env;
+use std::{env, thread};
 use std::fs::File;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::exit;
-use std::time::{Duration};
-use clap::Parser;
-use dialoguer::Confirm;
-use dialoguer::console::Term;
-use indicatif::{FormattedDuration, ProgressBar, ProgressStyle};
-use log::{info, error, trace};
-use crate::model::{ETHERNET_HEADER_LENGTH, IP_HEADER_LENGTH, UDP_HEADER_LENGTH};
-use crate::model::pcap::{PcapMagicNumber, PcapPacketRecord};
+use std::sync::mpsc;
 
-const DEFAULT_DEST_PORT : u16 = 3000;
-const DEFAULT_SRC_PORT : u16 = 3000;
-const DEFAULT_TTL : u32 = 1;
+use clap::Parser;
+use dialoguer::Select;
+use dialoguer::console::Term;
+use dialoguer::theme::ColorfulTheme;
+use indicatif::{ProgressBar, ProgressStyle};
+use log::{error, info, trace};
+
+use player::Player;
+use constants::{DEFAULT_DEST_PORT, DEFAULT_SRC_PORT, DEFAULT_TTL};
+use crate::model::pcap::Pcap;
+use crate::model::{Command, Recording};
 
 #[derive(Parser, Debug)]
 #[clap(name = "packet-play")]
@@ -48,116 +51,47 @@ fn main() {
         exit(1);
     };
 
-    let player = Player::new(cli.file).destination(cli.destination).source_port(cli.source_port).ttl(cli.ttl);
-    player.play();
-}
+    let file = File::open(file_path).unwrap();
+    let recording = Pcap::try_from(file);
 
-struct Player {
-    file_path: String,
-    destination: SocketAddr,
-    source_port: u16,
-    ttl: u32,
-}
+    if let Ok(recording) = recording {
+        let (sender, receiver) = mpsc::channel();
 
-impl Player {
-    pub fn new(file_path: String) -> Self {
-        Self {
-            file_path,
-            destination: SocketAddr::new(IpAddr::V4(Ipv4Addr::BROADCAST),DEFAULT_DEST_PORT),
-            source_port: DEFAULT_SRC_PORT,
-            ttl: DEFAULT_TTL,
-        }
-    }
+        // TODO put in a MultiBar with as many empty bars as there are Commands in the Select dialog
+        let bar = ProgressBar::new(recording.packets.len() as u64);
+        bar.set_style(ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
+            .progress_chars("#>-"));
+        let player_bar = bar.clone();
 
-    pub fn file(self, file_path: String) -> Self {
-        Self {
-            file_path,
-            ..self
-        }
-    }
+        let player_handle = thread::spawn(move || {
+            let mut player = Player::new(Recording::PCAP(recording), receiver, player_bar).destination(cli.destination).source_port(cli.source_port).ttl(cli.ttl);
+            player.play();
+        });
 
-    pub fn destination(self, destination: SocketAddr) -> Self {
-        Self {
-            destination,
-            ..self
-        }
-    }
+        loop {
+            let selection = Select::with_theme(&ColorfulTheme::default())
+                .items(&Command::as_vec())
+                .default(0)
+                .interact_on_opt(&Term::stdout()).unwrap().unwrap();
 
-    pub fn source_port(self, source_port: u16) -> Self {
-        Self {
-            source_port,
-            ..self
-        }
-    }
-
-    pub fn ttl(self, ttl: u32) -> Self {
-        Self {
-            ttl,
-            ..self
-        }
-    }
-
-    pub fn play(&self) {
-        let socket = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), self.source_port)).expect(format!("Failed to bind socket to port {:?}", self.source_port).as_str());
-        socket.set_broadcast(true).expect("Failed to set socket SO_BROADCAST option.");
-        socket.set_ttl(self.ttl).expect("Failed to set socket TTL value");
-
-        let file = File::open(self.file_path.clone()).unwrap();
-        let recording = model::pcap::Pcap::try_from(file);
-
-        if let Ok(recording) = recording {
-            trace!("{:?}", recording.header);
-
-            let bar = ProgressBar::new(recording.packets.len() as u64);
-            bar.set_style(ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
-                .progress_chars("#>-"));
-
-            let mut previous_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.first().unwrap());
-            let last_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.last().unwrap());
-            let total_duration = FormattedDuration(last_ts - previous_ts);
-            info!("Recording duration {}", total_duration);
-
-            let strip_headers_index = (ETHERNET_HEADER_LENGTH+IP_HEADER_LENGTH+UDP_HEADER_LENGTH+1) as usize;
-
-            match Confirm::new().with_prompt("Play recording?").interact_on_opt(&Term::stdout()).unwrap() {
-                None | Some(false) => { info!("Ok, bye."); exit(0); }
-                Some(true) => { }
+            let command = Command::from(selection);
+            if let Err(err) = sender.send(command) {
+                // error!("Failed to process user input command, stopping program execution");
+                // trace!("{err}");
+                break;
             }
-
-            for (i, packet) in recording.packets.iter().enumerate() {
-                let current_ts = duration_from_timestamp(&recording.header.magic_number, &packet);
-                let diff = current_ts - previous_ts;
-                std::thread::sleep(diff);
-                previous_ts = current_ts;
-                bar.set_position(i as u64);
-                let _bytes_send = socket.send_to(
-                    &packet.packet_data.as_slice()[strip_headers_index..],
-                    self.destination)
-                    .expect("Could not send packet");
+            if command == Command::Quit {
+                break;
             }
-
-            bar.finish_with_message("Recording finished.");
-        } else {
-            let error = recording.unwrap_err();
-            error!("Cannot play recording, because: {:?}", error);
         }
-    }
-}
 
-fn duration_from_timestamp(mode: &PcapMagicNumber, packet: &PcapPacketRecord) -> Duration {
-    let (fraction, overflow) = match mode {
-        PcapMagicNumber::LeMicros => {
-            packet.ts_secs_fraction.overflowing_mul(1_000)
-        }
-        PcapMagicNumber::BeNanos => { (packet.ts_secs_fraction, false) }
-    };
-    let seconds = if overflow {
-        packet.ts_secs + 1
+        player_handle.join().expect("Player thread failed.");
     } else {
-        packet.ts_secs
-    } as u64;
-    Duration::new(seconds, fraction)
+        let error = recording.unwrap_err();
+        error!("Cannot play recording, because: {:?}", error);
+        exit(1);
+    };
 }
 
 // TODO controls like pause, stop, rewind (put recording in separate thread?), Player state machine
