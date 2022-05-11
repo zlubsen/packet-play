@@ -7,12 +7,13 @@ use std::fs::File;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::exit;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use clap::Parser;
 use dialoguer::Select;
 use dialoguer::console::Term;
 use dialoguer::theme::ColorfulTheme;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{error, info, trace};
 
 use player::Player;
@@ -32,7 +33,11 @@ struct Cli {
     source_port: u16,
     #[clap(short, long, default_value_t = DEFAULT_TTL)]
     ttl: u32,
+    #[clap(short, long)]
+    auto_play_disable: bool,
 }
+
+const SELECT_UNSUPPORTED_KEY_INPUT: usize = 99;
 
 fn main() {
     if env::var("RUST_LOG").is_err() {
@@ -44,6 +49,8 @@ fn main() {
 
     info!("Using file: {}", cli.file);
     info!("Replaying to destination: {:?}", cli.destination);
+
+    info!("Auto play: {}", cli.auto_play_disable);
 
     let file_path = std::path::Path::new(cli.file.as_str());
     if !file_path.is_file() || !file_path.exists() {
@@ -57,28 +64,41 @@ fn main() {
     if let Ok(recording) = recording {
         let (sender, receiver) = mpsc::channel();
 
-        // TODO put in a MultiBar with as many empty bars as there are Commands in the Select dialog
         let bar = ProgressBar::new(recording.packets.len() as u64);
+
         bar.set_style(ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
+            // .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
+            .template("{msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
             .progress_chars("#>-"));
+
         let player_bar = bar.clone();
 
         let player_handle = thread::spawn(move || {
             let mut player = Player::new(Recording::PCAP(recording), receiver, player_bar).destination(cli.destination).source_port(cli.source_port).ttl(cli.ttl);
             player.play();
         });
+        thread::sleep(Duration::from_millis(500)); // Give the player time to setup and output messages to terminal.
+
+        if !cli.auto_play_disable {
+            sender.send(Command::Play).expect("Auto play failed.");
+        }
+
+        let mut initialised = false;
 
         loop {
             let selection = Select::with_theme(&ColorfulTheme::default())
                 .items(&Command::as_vec())
                 .default(0)
-                .interact_on_opt(&Term::stdout()).unwrap().unwrap();
+                .report(true)
+                .clear(true)
+                .interact_on_opt(&Term::stdout()).expect("inner").unwrap_or(SELECT_UNSUPPORTED_KEY_INPUT);
+
+            if !initialised {
+                sender.send(Command::SyncTerm);
+            }
 
             let command = Command::from(selection);
             if let Err(err) = sender.send(command) {
-                // error!("Failed to process user input command, stopping program execution");
-                // trace!("{err}");
                 break;
             }
             if command == Command::Quit {
@@ -93,6 +113,3 @@ fn main() {
         exit(1);
     };
 }
-
-// TODO controls like pause, stop, rewind (put recording in separate thread?), Player state machine
-// TODO dialog to replay at finish of replaying

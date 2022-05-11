@@ -26,6 +26,7 @@ pub enum Command {
     Rewind,
     Quit,
     Unspecified,
+    SyncTerm, // indicates the player that the CLI is ready drawing
 }
 
 impl Command {
@@ -35,6 +36,7 @@ impl Command {
             "Pause",
             "Rewind",
             "Quit",
+            "", // empty line for the progress bar
         ]
     }
 }

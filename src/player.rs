@@ -20,7 +20,7 @@ pub struct Player {
     state: PlayerState,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 enum PlayerState {
     Initial,
     Playing,
@@ -92,25 +92,36 @@ impl Player {
 
         let strip_headers_index = (ETHERNET_HEADER_LENGTH+IP_HEADER_LENGTH+UDP_HEADER_LENGTH+1) as usize;
 
-        // match Confirm::new().with_prompt("Play recording?").interact_on_opt(&Term::stdout()).unwrap() {
-        //     None | Some(false) => { info!("Ok, bye."); exit(0); }
-        //     Some(true) => { }
-        // }
-
         let mut packets = recording.packets.iter().enumerate();
+        let mut terminal_synced = false;
 
         loop {
             // receive any command and update state
             self.state = match self.cmd_rx.try_recv() {
-                Ok(Command::Play) => { PlayerState::Playing }
-                Ok(Command::Pause) => { PlayerState::Paused }
+                Ok(Command::Play) => { if self.state == PlayerState::Initial {
+                        self.progress_bar.set_message("Playing");
+                        self.progress_bar.reset_elapsed();
+                    }
+                    PlayerState::Playing
+                }
+                Ok(Command::Pause) => {
+                    self.progress_bar.set_message("Paused");
+                    PlayerState::Paused
+                }
                 Ok(Command::Rewind) => {
                     packets = recording.packets.iter().enumerate();
                     previous_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.first().unwrap());
-                    self.progress_bar.set_position(0);
-                    PlayerState::Initial }
+                    self.progress_bar.reset();
+                    self.progress_bar.set_message("Stopped");
+                    PlayerState::Initial
+                }
                 Ok(Command::Quit) => { PlayerState::Quit }
                 Ok(Command::Unspecified) => { self.state } // no-op
+                Ok(Command::SyncTerm) => {
+                    self.progress_bar.set_message("Ready");
+                    terminal_synced = true;
+                    self.state
+                } // no-op
                 Err(TryRecvError::Empty) => { self.state } // no-op
                 Err(TryRecvError::Disconnected) => {
                     error!("Command channel disconnected, stopping program execution.");
@@ -120,7 +131,9 @@ impl Player {
 
             // act on current state
             match self.state {
-                PlayerState::Initial => { } // no-op
+                PlayerState::Initial => { if terminal_synced {
+                    self.progress_bar.set_message("Ready");
+                } } // no-op
                 PlayerState::Playing => {
                     if let Some((i, packet)) = packets.next() {
                         let current_ts = duration_from_timestamp(&recording.header.magic_number, &packet);
@@ -134,11 +147,12 @@ impl Player {
                             self.destination)
                             .expect("Could not send packet");
                     } else {
+                        self.progress_bar.finish_with_message("Finished");
                         self.state = PlayerState::Finished;
                     }
                 }
-                PlayerState::Paused => { } // no-op
-                PlayerState::Finished => { } // no-op
+                PlayerState::Paused => { if terminal_synced { self.progress_bar.tick() } } // no-op
+                PlayerState::Finished => { if terminal_synced { self.progress_bar.tick() } } // no-op
                 PlayerState::Quit => {
                     thread::sleep(Duration::from_millis(100));
                     break;
@@ -165,3 +179,5 @@ fn duration_from_timestamp(mode: &PcapMagicNumber, packet: &PcapPacketRecord) ->
     } as u64;
     Duration::new(seconds, fraction)
 }
+
+// TODO progress bar elapsed time progresses even while paused; replace with time calculation based on the timestamps
