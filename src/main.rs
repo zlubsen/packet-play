@@ -13,8 +13,8 @@ use clap::Parser;
 use dialoguer::Select;
 use dialoguer::console::Term;
 use dialoguer::theme::ColorfulTheme;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use log::{error, info, trace};
+use indicatif::{ProgressBar, ProgressStyle};
+use log::{error, info};
 
 use player::Player;
 use constants::{DEFAULT_DEST_PORT, DEFAULT_SRC_PORT, DEFAULT_TTL};
@@ -68,8 +68,9 @@ fn main() {
 
         bar.set_style(ProgressStyle::default_bar()
             // .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
-            .template("{msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
+            .template("{msg} [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
             .progress_chars("#>-"));
+        bar.set_draw_rate(10);
 
         let player_bar = bar.clone();
 
@@ -94,11 +95,12 @@ fn main() {
                 .interact_on_opt(&Term::stdout()).expect("inner").unwrap_or(SELECT_UNSUPPORTED_KEY_INPUT);
 
             if !initialised {
-                sender.send(Command::SyncTerm);
+                let _ = sender.send(Command::SyncTerm);
+                initialised = true;
             }
 
             let command = Command::from(selection);
-            if let Err(err) = sender.send(command) {
+            if let Err(_err) = sender.send(command) {
                 break;
             }
             if command == Command::Quit {

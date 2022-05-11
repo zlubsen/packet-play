@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread;
@@ -27,6 +28,18 @@ enum PlayerState {
     Paused,
     Finished,
     Quit,
+}
+
+impl Display for PlayerState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlayerState::Initial => { write!(f, "Ready") }
+            PlayerState::Playing => { write!(f, "Playing") }
+            PlayerState::Paused => { write!(f, "Paused") }
+            PlayerState::Finished => { write!(f, "Finished") }
+            PlayerState::Quit => { write!(f, "") }
+        }
+    }
 }
 
 impl Player {
@@ -85,54 +98,55 @@ impl Player {
         };
         trace!("{:?}", recording.header);
 
-        let mut previous_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.first().unwrap());
+        let first_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.first().unwrap());
         let last_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.last().unwrap());
-        let total_duration = FormattedDuration(last_ts - previous_ts);
-        info!("Recording duration {}", total_duration);
+        let total_duration = FormattedDuration(last_ts - first_ts);
+        trace!("Recording duration {}", total_duration);
 
         let strip_headers_index = (ETHERNET_HEADER_LENGTH+IP_HEADER_LENGTH+UDP_HEADER_LENGTH+1) as usize;
 
         let mut packets = recording.packets.iter().enumerate();
         let mut terminal_synced = false;
+        let mut previous_ts = first_ts.clone();
+        let mut elapsed = previous_ts - first_ts;
+        let mut previous_state = self.state.clone();
 
         loop {
             // receive any command and update state
-            self.state = match self.cmd_rx.try_recv() {
+            if let Some(new_state) = match self.cmd_rx.try_recv() {
                 Ok(Command::Play) => { if self.state == PlayerState::Initial {
-                        self.progress_bar.set_message("Playing");
-                        self.progress_bar.reset_elapsed();
+                        // self.progress_bar.reset_elapsed();
                     }
-                    PlayerState::Playing
+                    Some(PlayerState::Playing)
                 }
                 Ok(Command::Pause) => {
-                    self.progress_bar.set_message("Paused");
-                    PlayerState::Paused
+                    Some(PlayerState::Paused)
                 }
                 Ok(Command::Rewind) => {
                     packets = recording.packets.iter().enumerate();
                     previous_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.first().unwrap());
                     self.progress_bar.reset();
-                    self.progress_bar.set_message("Stopped");
-                    PlayerState::Initial
+                    Some(PlayerState::Initial)
                 }
-                Ok(Command::Quit) => { PlayerState::Quit }
-                Ok(Command::Unspecified) => { self.state } // no-op
+                Ok(Command::Quit) => { Some(PlayerState::Quit) }
+                Ok(Command::Unspecified) => { None } // no-op
                 Ok(Command::SyncTerm) => {
-                    self.progress_bar.set_message("Ready");
                     terminal_synced = true;
-                    self.state
+                    None
                 } // no-op
-                Err(TryRecvError::Empty) => { self.state } // no-op
+                Err(TryRecvError::Empty) => { None } // no-op
                 Err(TryRecvError::Disconnected) => {
                     error!("Command channel disconnected, stopping program execution.");
-                    PlayerState::Quit
+                    Some(PlayerState::Quit)
                 }
+            } {
+                self.state = new_state;
             };
 
             // act on current state
             match self.state {
                 PlayerState::Initial => { if terminal_synced {
-                    self.progress_bar.set_message("Ready");
+                    self.progress_bar.set_message(format!("{}", self.state));
                 } } // no-op
                 PlayerState::Playing => {
                     if let Some((i, packet)) = packets.next() {
@@ -141,27 +155,28 @@ impl Player {
                         // TODO subtract the time it took to send the packet
                         std::thread::sleep(diff);
                         previous_ts = current_ts;
+                        elapsed = current_ts - first_ts;
                         self.progress_bar.set_position(i as u64);
                         let _bytes_send = socket.send_to(
                             &packet.packet_data.as_slice()[strip_headers_index..],
                             self.destination)
                             .expect("Could not send packet");
                     } else {
-                        self.progress_bar.finish_with_message("Finished");
                         self.state = PlayerState::Finished;
                     }
                 }
                 PlayerState::Paused => { if terminal_synced { self.progress_bar.tick() } } // no-op
                 PlayerState::Finished => { if terminal_synced { self.progress_bar.tick() } } // no-op
                 PlayerState::Quit => {
-                    thread::sleep(Duration::from_millis(100));
                     break;
                 }
             }
+            if previous_state != self.state {
+                // self.progress_bar.set_message(format!("{}\t[{}]", self.state, FormattedDuration(elapsed)));
+                self.progress_bar.set_message(format!("{}", self.state));
+            }
+            previous_state = self.state.clone();
         }
-
-        // TODO indication that we are finished
-        // self.progress_bar.finish_with_message("Recording finished.");
     }
 }
 
