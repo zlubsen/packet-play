@@ -1,11 +1,10 @@
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::thread;
 use std::time::Duration;
 
 use indicatif::{FormattedDuration, ProgressBar};
-use log::{error, info, trace};
+use log::{error, trace};
 
 use crate::constants::{DEFAULT_DEST_PORT, DEFAULT_SRC_PORT, DEFAULT_TTL};
 use crate::model::{Command, ETHERNET_HEADER_LENGTH, IP_HEADER_LENGTH, Recording, UDP_HEADER_LENGTH};
@@ -152,7 +151,7 @@ impl Player {
                     if let Some((i, packet)) = packets.next() {
                         let current_ts = duration_from_timestamp(&recording.header.magic_number, &packet);
                         let diff = current_ts - previous_ts;
-                        // TODO subtract the time it took to send the packet
+                        // TODO subtract the time it took to send the previous packet and complete the loop
                         std::thread::sleep(diff);
                         previous_ts = current_ts;
                         elapsed = current_ts - first_ts;

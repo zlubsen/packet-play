@@ -47,10 +47,12 @@ fn main() {
 
     let cli = Cli::parse();
 
-    info!("Using file: {}", cli.file);
-    info!("Replaying to destination: {:?}", cli.destination);
-
-    info!("Auto play: {}", cli.auto_play_disable);
+    info!("Settings:");
+    info!("\t Recording:\t{}", cli.file);
+    info!("\t Destination:\t{}", cli.destination);
+    info!("\t Source port:\t{}", cli.source_port);
+    info!("\t TTL:\t\t{}", cli.ttl);
+    info!("\t Auto play:\t{}", !cli.auto_play_disable);
 
     let file_path = std::path::Path::new(cli.file.as_str());
     if !file_path.is_file() || !file_path.exists() {
