@@ -1,10 +1,10 @@
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use indicatif::{FormattedDuration, ProgressBar};
-use log::{error, trace};
+use log::{error, info, trace};
 
 use crate::constants::{DEFAULT_DEST_PORT, DEFAULT_SRC_PORT, DEFAULT_TTL};
 use crate::model::{Command, ETHERNET_HEADER_LENGTH, IP_HEADER_LENGTH, Recording, UDP_HEADER_LENGTH};
@@ -100,21 +100,22 @@ impl Player {
         let first_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.first().unwrap());
         let last_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.last().unwrap());
         let total_duration = FormattedDuration(last_ts - first_ts);
-        trace!("Recording duration {}", total_duration);
+        info!("Recording duration {}", total_duration);
 
-        let strip_headers_index = (ETHERNET_HEADER_LENGTH+IP_HEADER_LENGTH+UDP_HEADER_LENGTH+1) as usize;
+        const STRIP_HEADERS_INDEX: usize = (ETHERNET_HEADER_LENGTH+IP_HEADER_LENGTH+UDP_HEADER_LENGTH+1) as usize;
 
         let mut packets = recording.packets.iter().enumerate();
         let mut terminal_synced = false;
         let mut previous_ts = first_ts.clone();
-        let mut elapsed = previous_ts - first_ts;
+        let mut playback_elapsed = previous_ts - first_ts;
         let mut previous_state = self.state.clone();
+
+        let mut loop_time_start : Option<Instant> = None;
 
         loop {
             // receive any command and update state
             if let Some(new_state) = match self.cmd_rx.try_recv() {
                 Ok(Command::Play) => { if self.state == PlayerState::Initial {
-                        // self.progress_bar.reset_elapsed();
                     }
                     Some(PlayerState::Playing)
                 }
@@ -124,6 +125,7 @@ impl Player {
                 Ok(Command::Rewind) => {
                     packets = recording.packets.iter().enumerate();
                     previous_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.first().unwrap());
+                    playback_elapsed = Duration::new(0,0);
                     self.progress_bar.reset();
                     Some(PlayerState::Initial)
                 }
@@ -150,17 +152,27 @@ impl Player {
                 PlayerState::Playing => {
                     if let Some((i, packet)) = packets.next() {
                         let current_ts = duration_from_timestamp(&recording.header.magic_number, &packet);
-                        let diff = current_ts - previous_ts;
-                        // TODO subtract the time it took to send the previous packet and complete the loop
-                        std::thread::sleep(diff);
+                        let ts_duration = current_ts.saturating_sub(previous_ts);
+
+                        let loop_duration = if let Some(start) = loop_time_start {
+                            start.elapsed()
+                        } else { Duration::new(0, 0) };
+
+                        std::thread::sleep(ts_duration.saturating_sub(loop_duration));
+
+                        loop_time_start = Some(Instant::now());
+
                         previous_ts = current_ts;
-                        elapsed = current_ts - first_ts;
-                        self.progress_bar.set_position(i as u64);
+                        playback_elapsed = current_ts - first_ts;
+
+                        self.progress_bar.set_position((i+1) as u64);
+
                         let _bytes_send = socket.send_to(
-                            &packet.packet_data.as_slice()[strip_headers_index..],
+                            &packet.packet_data.as_slice()[STRIP_HEADERS_INDEX..],
                             self.destination)
                             .expect("Could not send packet");
                     } else {
+                        self.progress_bar.finish();
                         self.state = PlayerState::Finished;
                     }
                 }
@@ -170,9 +182,8 @@ impl Player {
                     break;
                 }
             }
-            if previous_state != self.state {
-                // self.progress_bar.set_message(format!("{}\t[{}]", self.state, FormattedDuration(elapsed)));
-                self.progress_bar.set_message(format!("{}", self.state));
+            if previous_state != self.state || self.state == PlayerState::Playing {
+                self.progress_bar.set_message(format!("{} [{}]", self.state, FormattedDuration(playback_elapsed)));
             }
             previous_state = self.state.clone();
         }
