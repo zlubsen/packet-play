@@ -47,10 +47,12 @@ fn main() {
 
     let cli = Cli::parse();
 
-    info!("Using file: {}", cli.file);
-    info!("Replaying to destination: {:?}", cli.destination);
-
-    info!("Auto play: {}", cli.auto_play_disable);
+    info!("Settings:");
+    info!("\t Recording:\t{}", cli.file);
+    info!("\t Destination:\t{}", cli.destination);
+    info!("\t Source port:\t{}", cli.source_port);
+    info!("\t TTL:\t\t{}", cli.ttl);
+    info!("\t Auto play:\t{}", !cli.auto_play_disable);
 
     let file_path = std::path::Path::new(cli.file.as_str());
     if !file_path.is_file() || !file_path.exists() {
@@ -62,7 +64,8 @@ fn main() {
     let recording = Pcap::try_from(file);
 
     if let Ok(recording) = recording {
-        let (sender, receiver) = mpsc::channel();
+        let (cmd_sender, cmd_receiver) = mpsc::channel();
+        let (event_sender, event_receiver) = mpsc::channel();
 
         let bar = ProgressBar::new(recording.packets.len() as u64);
 
@@ -74,14 +77,22 @@ fn main() {
 
         let player_bar = bar.clone();
 
-        let player_handle = thread::spawn(move || {
-            let mut player = Player::new(Recording::PCAP(recording), receiver, player_bar).destination(cli.destination).source_port(cli.source_port).ttl(cli.ttl);
-            player.play();
-        });
+        // TODO handle errors on creation of player
+        let player_handle = match Player::builder()
+            .recording(Recording::PCAP(recording))
+            .destination(cli.destination)
+            .source_port(cli.source_port)
+            .ttl(cli.ttl)
+            .cmd_rx(cmd_receiver)
+            .event_tx(event_sender)
+            .build() {
+            Ok(handle) => { handle }
+            Err(err) => { error!("{err:?}"); exit(2); }
+        };
         thread::sleep(Duration::from_millis(500)); // Give the player time to setup and output messages to terminal.
 
         if !cli.auto_play_disable {
-            sender.send(Command::Play).expect("Auto play failed.");
+            cmd_sender.send(Command::Play).expect("Auto play failed.");
         }
 
         let mut initialised = false;
@@ -95,12 +106,12 @@ fn main() {
                 .interact_on_opt(&Term::stdout()).expect("inner").unwrap_or(SELECT_UNSUPPORTED_KEY_INPUT);
 
             if !initialised {
-                let _ = sender.send(Command::SyncTerm);
+                let _ = cmd_sender.send(Command::SyncTerm);
                 initialised = true;
             }
 
             let command = Command::from(selection);
-            if let Err(_err) = sender.send(command) {
+            if let Err(_err) = cmd_sender.send(command) {
                 break;
             }
             if command == Command::Quit {
@@ -112,6 +123,6 @@ fn main() {
     } else {
         let error = recording.unwrap_err();
         error!("Cannot play recording, because: {:?}", error);
-        exit(1);
+        exit(3);
     };
 }

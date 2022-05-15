@@ -1,5 +1,7 @@
+use std::time::Duration;
 use crate::model::pcap::Pcap;
 use crate::model::pcapng::PcapNG;
+use crate::player::PlayerState;
 
 pub(crate) mod pcap;
 pub(crate) mod pcapng;
@@ -8,19 +10,20 @@ pub(crate) const ETHERNET_HEADER_LENGTH : u16 = 13;
 pub(crate) const IP_HEADER_LENGTH : u16 = 20;
 pub(crate) const UDP_HEADER_LENGTH : u16 = 8;
 
-#[derive(Debug)]
-pub enum Errors {
+#[derive(Clone, Debug)]
+pub(crate) enum Error {
     ParsePcapError,
     ParsePcapNgError,
+    PlayerInitError,
 }
 
-pub enum Recording {
+pub(crate) enum Recording {
     PCAP(Pcap),
     PCAPNG(PcapNG),
 }
 
 #[derive(Copy, Clone, PartialEq)]
-pub enum Command {
+pub(crate) enum Command {
     Play,
     Pause,
     Rewind,
@@ -51,6 +54,26 @@ impl From<usize> for Command {
             _ => { Command::Unspecified }
         }
     }
+}
+
+#[derive(Clone)]
+pub(crate) enum Event {
+    Error(Error),
+    PlayerStateChanged(StateChange),
+    PlayerPositionChanged(PositionChange),
+}
+
+#[derive(Copy, Clone)]
+pub(crate) struct StateChange {
+    pub(crate) state: PlayerState,
+}
+
+#[derive(Copy, Clone)]
+pub(crate) struct PositionChange {
+    pub(crate) position: usize,
+    pub(crate) max_position: usize,
+    pub(crate) time_position: Duration,
+    pub(crate) time_total: Duration,
 }
 
 // pub struct UdpPacket {
