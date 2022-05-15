@@ -5,10 +5,9 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use indicatif::{FormattedDuration};
-use log::{error, info, trace};
+use log::trace;
 
-use crate::model::{Command, Error, ETHERNET_HEADER_LENGTH, Event, IP_HEADER_LENGTH, PositionChange, Recording, StateChange, UDP_HEADER_LENGTH};
+use crate::model::{Command, Error, ETHERNET_HEADER_LENGTH, Event, IP_HEADER_LENGTH, Recording, UDP_HEADER_LENGTH};
 use crate::model::pcap::{PcapMagicNumber, PcapPacketRecord};
 
 pub struct Player {
@@ -44,6 +43,8 @@ impl Display for PlayerState {
 
 impl Player {
     pub fn run(&mut self) {
+        const STRIP_HEADERS_INDEX: usize = (ETHERNET_HEADER_LENGTH+IP_HEADER_LENGTH+UDP_HEADER_LENGTH+1) as usize;
+
         let socket = UdpSocket::bind(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), self.source_port))
             .expect(format!("Failed to bind socket to port {:?}", self.source_port).as_str());
@@ -53,7 +54,10 @@ impl Player {
         let recording = if let Recording::PCAP(pcap) = &self.recording {
             pcap
         } else {
-            error!("Files other than .pcap are currently not supported.");
+            let _ = self.event_tx.send(
+                Event::error(
+                    Error::FileTypeNotSupported("Files other than .pcap are currently not supported.".to_string()
+            )));
             return;
         };
         trace!("{:?}", recording.header);
@@ -61,16 +65,16 @@ impl Player {
         let first_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.first().unwrap());
         let last_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.last().unwrap());
         let total_duration = last_ts - first_ts;
-        // TODO also send PlayerPositionChanged before entering the main loop, removes need for this info!()
-        info!("Recording duration {}", FormattedDuration(total_duration.clone()));
-
-        const STRIP_HEADERS_INDEX: usize = (ETHERNET_HEADER_LENGTH+IP_HEADER_LENGTH+UDP_HEADER_LENGTH+1) as usize;
 
         let mut packets = recording.packets.iter().enumerate();
-        let mut terminal_synced = false;
+        // let mut terminal_synced = false;
         let mut previous_ts = first_ts.clone();
         let mut playback_elapsed = previous_ts - first_ts;
-        let mut previous_state = self.state.clone();
+        // let mut previous_state = self.state.clone();
+
+        let _ = self.event_tx.send(Event::PlayerReady);
+        let _ = self.event_tx.send(Event::state_event(PlayerState::Initial));
+        let _ = self.event_tx.send(Event::position_event(0,recording.packets.len(),playback_elapsed, total_duration));
 
         let mut loop_time_start : Option<Instant> = None;
 
@@ -88,32 +92,37 @@ impl Player {
                     packets = recording.packets.iter().enumerate();
                     previous_ts = duration_from_timestamp(&recording.header.magic_number, &recording.packets.first().unwrap());
                     playback_elapsed = Duration::new(0,0);
+                    let _ = self.event_tx.send(
+                        Event::position_event(
+                            0 ,packets.len(),
+                            playback_elapsed.clone(), total_duration.clone()));
                     // self.progress_bar.reset();
                     Some(PlayerState::Initial)
                 }
                 Ok(Command::Quit) => { Some(PlayerState::Quit) }
                 Ok(Command::Unspecified) => { None } // no-op
-                Ok(Command::SyncTerm) => {
-                    terminal_synced = true;
-                    None
-                } // no-op
+                // Ok(Command::SyncTerm) => {
+                //     // terminal_synced = true;
+                //     None
+                // } // no-op
                 Err(TryRecvError::Empty) => { None } // no-op
                 Err(TryRecvError::Disconnected) => {
-                    error!("Command channel disconnected, stopping program execution.");
+                    let _ = self.event_tx.send(Event::error(Error::CommandChannelError)).unwrap();
                     Some(PlayerState::Quit)
                 }
             } {
-                let _ = self.event_tx.send(Event::PlayerStateChanged(StateChange { state: new_state }));
+                let _ = self.event_tx.send(Event::state_event(new_state));
                 self.state = new_state;
             };
 
             // TODO review need for terminal_synced, if we send the state before entering the main loop
             // act on current state
             match self.state {
-                PlayerState::Initial => { if terminal_synced {
-                    let _ = self.event_tx.send(Event::PlayerStateChanged(StateChange { state: PlayerState::Initial }));
+                PlayerState::Initial => {
+                    // if terminal_synced {
+                    //     let _ = self.event_tx.send(Event::PlayerStateChanged(StateChange { state: PlayerState::Initial }));
                     // self.progress_bar.set_message(format!("{}", self.state));
-                } } // no-op
+                } //} // no-op
                 PlayerState::Playing => {
                     if let Some((i, packet)) = packets.next() {
                         let current_ts = duration_from_timestamp(&recording.header.magic_number, &packet);
@@ -131,12 +140,12 @@ impl Player {
                         playback_elapsed = current_ts - first_ts;
 
                         // self.progress_bar.set_position((i+1) as u64);
-                        let _ = self.event_tx.send(Event::PlayerPositionChanged(PositionChange {
-                            position: i+1,
-                            max_position: recording.packets.len()+1,
-                            time_position: playback_elapsed.clone(),
-                            time_total: total_duration.clone(),
-                        }));
+                        let _ = self.event_tx.send(Event::position_event(
+                            i,
+                            recording.packets.len(),
+                            playback_elapsed.clone(),
+                            total_duration.clone()
+                        ));
 
                         let _bytes_send = socket.send_to(
                             &packet.packet_data.as_slice()[STRIP_HEADERS_INDEX..],
@@ -144,7 +153,7 @@ impl Player {
                             .expect("Could not send packet");
                     } else {
                         // self.progress_bar.finish();
-                        let _ = self.event_tx.send(Event::PlayerStateChanged(StateChange { state: PlayerState::Finished }));
+                        let _ = self.event_tx.send(Event::state_event(PlayerState::Finished));
                         self.state = PlayerState::Finished;
                     }
                 }
@@ -157,7 +166,7 @@ impl Player {
             // if previous_state != self.state || self.state == PlayerState::Playing {
             //     self.progress_bar.set_message(format!("{} [{}]", self.state, FormattedDuration(playback_elapsed)));
             // }
-            previous_state = self.state.clone();
+            // previous_state = self.state.clone();
         }
     }
 
@@ -257,7 +266,7 @@ impl PlayerBuilder {
             event_tx: self.event_tx.unwrap(),
         };
         Ok(thread::spawn(move || {
-            player.run()
+            player.run();
         }))
     }
 }

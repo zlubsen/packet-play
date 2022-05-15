@@ -11,10 +11,12 @@ pub(crate) const IP_HEADER_LENGTH : u16 = 20;
 pub(crate) const UDP_HEADER_LENGTH : u16 = 8;
 
 #[derive(Clone, Debug)]
-pub(crate) enum Error {
+pub enum Error {
     ParsePcapError,
     ParsePcapNgError,
     PlayerInitError,
+    FileTypeNotSupported(String),
+    CommandChannelError,
 }
 
 pub(crate) enum Recording {
@@ -29,7 +31,7 @@ pub(crate) enum Command {
     Rewind,
     Quit,
     Unspecified,
-    SyncTerm, // indicates the player that the CLI is ready drawing
+    // SyncTerm, // indicates the player that the CLI is ready drawing
 }
 
 impl Command {
@@ -57,23 +59,57 @@ impl From<usize> for Command {
 }
 
 #[derive(Clone)]
-pub(crate) enum Event {
+pub enum Event {
     Error(Error),
+    PlayerReady,
     PlayerStateChanged(StateChange),
     PlayerPositionChanged(PositionChange),
 }
 
+impl Event {
+    pub(crate) fn state_event(state: PlayerState) -> Self {
+        Event::PlayerStateChanged(StateChange{
+            state
+        })
+    }
+
+    pub(crate) fn position_event(current_pos: usize, max_pos: usize, current_time:Duration, total_time: Duration) -> Self {
+        // This function increases the positions with +1 to compensate for 0-based vec indexing.
+        Event::PlayerPositionChanged(PositionChange{
+            position: current_pos+1,
+            max_position: max_pos+1,
+            time_position: current_time,
+            time_total: total_time,
+        })
+    }
+
+    pub(crate) fn error(error: Error) -> Self {
+        Event::Error(error)
+    }
+}
+
 #[derive(Copy, Clone)]
-pub(crate) struct StateChange {
+pub struct StateChange {
     pub(crate) state: PlayerState,
 }
 
 #[derive(Copy, Clone)]
-pub(crate) struct PositionChange {
+pub struct PositionChange {
     pub(crate) position: usize,
     pub(crate) max_position: usize,
     pub(crate) time_position: Duration,
     pub(crate) time_total: Duration,
+}
+
+impl Default for PositionChange {
+    fn default() -> Self {
+        Self {
+            position: 0,
+            max_position: 0,
+            time_position: Duration::from_secs(0),
+            time_total: Duration::from_secs(0),
+        }
+    }
 }
 
 // pub struct UdpPacket {

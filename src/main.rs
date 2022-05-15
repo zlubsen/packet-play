@@ -2,24 +2,27 @@ mod model;
 mod player;
 mod constants;
 
-use std::{env, thread};
+use std::env;
 use std::fs::File;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::exit;
 use std::sync::mpsc;
+use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
 use clap::Parser;
 use dialoguer::Select;
 use dialoguer::console::Term;
 use dialoguer::theme::ColorfulTheme;
-use indicatif::{ProgressBar, ProgressStyle};
-use log::{error, info};
+use indicatif::{FormattedDuration, ProgressBar, ProgressStyle};
+use log::{error, info, trace};
 
 use player::Player;
 use constants::{DEFAULT_DEST_PORT, DEFAULT_SRC_PORT, DEFAULT_TTL};
+use crate::constants::{ERROR_CREATE_PLAYER, ERROR_INCORRECT_FILE_PATH, ERROR_INIT_PLAYER, ERROR_INIT_PLAYER_TIMEOUT, ERROR_PARSE_FILE, PLAYER_STARTUP_TIMEOUT_MS};
 use crate::model::pcap::Pcap;
-use crate::model::{Command, Recording};
+use crate::model::{Command, Event, PositionChange, Recording};
+use crate::player::PlayerState;
 
 #[derive(Parser, Debug)]
 #[clap(name = "packet-play")]
@@ -57,7 +60,7 @@ fn main() {
     let file_path = std::path::Path::new(cli.file.as_str());
     if !file_path.is_file() || !file_path.exists() {
         error!("Provided path {} is not a file or does not exist.", {cli.file});
-        exit(1);
+        exit(ERROR_INCORRECT_FILE_PATH);
     };
 
     let file = File::open(file_path).unwrap();
@@ -67,15 +70,13 @@ fn main() {
         let (cmd_sender, cmd_receiver) = mpsc::channel();
         let (event_sender, event_receiver) = mpsc::channel();
 
-        let bar = ProgressBar::new(recording.packets.len() as u64);
+        let progress_bar = ProgressBar::new(recording.packets.len() as u64);
 
-        bar.set_style(ProgressStyle::default_bar()
+        progress_bar.set_style(ProgressStyle::default_bar()
             // .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
             .template("{msg} [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
             .progress_chars("#>-"));
-        bar.set_draw_rate(10);
-
-        let player_bar = bar.clone();
+        progress_bar.set_draw_rate(10);
 
         // TODO handle errors on creation of player
         let player_handle = match Player::builder()
@@ -87,17 +88,53 @@ fn main() {
             .event_tx(event_sender)
             .build() {
             Ok(handle) => { handle }
-            Err(err) => { error!("{err:?}"); exit(2); }
+            Err(err) => { error!("{err:?}"); exit(ERROR_CREATE_PLAYER); }
         };
-        thread::sleep(Duration::from_millis(500)); // Give the player time to setup and output messages to terminal.
-
-        if !cli.auto_play_disable {
-            cmd_sender.send(Command::Play).expect("Auto play failed.");
+        loop {
+            match event_receiver.recv_timeout(Duration::from_secs(PLAYER_STARTUP_TIMEOUT_MS)) {
+                Ok(event) => {
+                    match event {
+                        Event::Error(_) => { exit(ERROR_INIT_PLAYER) }
+                        Event::PlayerReady => {
+                            trace!("Player is ready");
+                            break; }
+                        _ => { trace!("Unexpected to see this event here..."); }
+                    }
+                }
+                Err(_) => {
+                    exit(ERROR_INIT_PLAYER_TIMEOUT)
+                }
+            }
         }
 
-        let mut initialised = false;
+        if !cli.auto_play_disable {
+            let _ = cmd_sender.send(Command::Play);
+        }
+
+        let mut current_state = PlayerState::Initial;
+        let mut current_position = PositionChange::default();
 
         loop {
+            match event_receiver.try_recv() {
+                Ok(Event::PlayerReady) => {}
+                Ok(Event::PlayerStateChanged(state)) => {
+                    trace!("updated state");
+                    current_state = state.state;
+                }
+                Ok(Event::PlayerPositionChanged(position)) => {
+                    trace!("updated position");
+                    current_position = position;
+                    progress_bar.set_position(current_position.position as u64);
+                }
+                Ok(Event::Error(error)) => { trace!("{error:?}"); }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    trace!("Event channel disconnected, Player stopped working. Exiting.");
+                    break;
+                }
+            }
+
+            // The dialog blocks the loop...
             let selection = Select::with_theme(&ColorfulTheme::default())
                 .items(&Command::as_vec())
                 .default(0)
@@ -105,10 +142,8 @@ fn main() {
                 .clear(true)
                 .interact_on_opt(&Term::stdout()).expect("inner").unwrap_or(SELECT_UNSUPPORTED_KEY_INPUT);
 
-            if !initialised {
-                let _ = cmd_sender.send(Command::SyncTerm);
-                initialised = true;
-            }
+            progress_bar.set_message(format!("{} [{}]", current_state, FormattedDuration(current_position.time_position)));
+            progress_bar.tick();
 
             let command = Command::from(selection);
             if let Err(_err) = cmd_sender.send(command) {
@@ -123,6 +158,6 @@ fn main() {
     } else {
         let error = recording.unwrap_err();
         error!("Cannot play recording, because: {:?}", error);
-        exit(3);
+        exit(ERROR_PARSE_FILE);
     };
 }
