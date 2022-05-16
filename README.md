@@ -10,7 +10,7 @@ A CLI tool to replay .pcap and .pcapng files on networks.
 
 Usage notes:
 - Use `--help` for a list of arguments
-- By default, the player will start to repay the provided file immediately. The `-a` flag overrides this behavior.
+- By default, the player will start to replay the provided file immediately. The `-a` flag overrides this behavior.
 
 Minimal usage:
 ```sh
