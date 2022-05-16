@@ -2,6 +2,7 @@ mod model;
 mod player;
 mod constants;
 mod cli;
+mod gui;
 
 use std::env;
 use std::fs::File;
@@ -56,7 +57,7 @@ fn main() {
     if let Ok(recording) = recording {
         match mode {
             Mode::Cli => { cli::run_cli(cli, recording) }
-            Mode::Gui => {}
+            Mode::Gui => { gui::run_gui(cli, recording) }
         }
     } else {
         let error = recording.unwrap_err();
