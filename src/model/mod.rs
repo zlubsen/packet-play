@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::time::Duration;
 use crate::model::pcap::Pcap;
 use crate::model::pcapng::PcapNG;
@@ -10,8 +11,26 @@ pub(crate) const ETHERNET_HEADER_LENGTH : u16 = 13;
 pub(crate) const IP_HEADER_LENGTH : u16 = 20;
 pub(crate) const UDP_HEADER_LENGTH : u16 = 8;
 
+pub enum Mode {
+    Cli,
+    Gui,
+}
+
+impl FromStr for Mode {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "cli" => { Ok(Mode::Cli) }
+            "gui" => { Ok(Mode::Gui) }
+            _ => Err(Error::ArgumentError),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Error {
+    ArgumentError,
     ParsePcapError,
     ParsePcapNgError,
     PlayerInitError,
