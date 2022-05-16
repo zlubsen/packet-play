@@ -64,6 +64,7 @@ pub enum Event {
     PlayerReady,
     PlayerStateChanged(StateChange),
     PlayerPositionChanged(PositionChange),
+    QuitCommanded,
 }
 
 impl Event {

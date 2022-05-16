@@ -2,7 +2,7 @@ mod model;
 mod player;
 mod constants;
 
-use std::env;
+use std::{env, thread};
 use std::fs::File;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::exit;
@@ -68,12 +68,13 @@ fn main() {
 
     if let Ok(recording) = recording {
         let (cmd_sender, cmd_receiver) = mpsc::channel();
+        let input_cmd_sender = cmd_sender.clone();
         let (event_sender, event_receiver) = mpsc::channel();
+        let input_event_sender = event_sender.clone();
 
         let progress_bar = ProgressBar::new(recording.packets.len() as u64);
 
         progress_bar.set_style(ProgressStyle::default_bar()
-            // .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
             .template("{msg} [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
             .progress_chars("#>-"));
         progress_bar.set_draw_rate(10);
@@ -90,13 +91,31 @@ fn main() {
             Ok(handle) => { handle }
             Err(err) => { error!("{err:?}"); exit(ERROR_CREATE_PLAYER); }
         };
+        let input_handle = thread::spawn(move || {
+            loop {
+                let selection = Select::with_theme(&ColorfulTheme::default())
+                    .items(&Command::as_vec())
+                    .default(0)
+                    .report(true)
+                    .clear(true)
+                    .interact_on_opt(&Term::stdout()).expect("inner").unwrap_or(SELECT_UNSUPPORTED_KEY_INPUT);
+
+                let command = Command::from(selection);
+                if let Err(_err) = input_cmd_sender.send(command) {
+                    break;
+                }
+                if command == Command::Quit {
+                    let _ = input_event_sender.send(Event::QuitCommanded);
+                    break;
+                }
+            }
+        });
         loop {
             match event_receiver.recv_timeout(Duration::from_secs(PLAYER_STARTUP_TIMEOUT_MS)) {
                 Ok(event) => {
                     match event {
                         Event::Error(_) => { exit(ERROR_INIT_PLAYER) }
                         Event::PlayerReady => {
-                            trace!("Player is ready");
                             break; }
                         _ => { trace!("Unexpected to see this event here..."); }
                     }
@@ -115,46 +134,36 @@ fn main() {
         let mut current_position = PositionChange::default();
 
         loop {
-            match event_receiver.try_recv() {
-                Ok(Event::PlayerReady) => {}
+            let data_updated = match event_receiver.try_recv() {
+                Ok(Event::QuitCommanded) => { break; }
+                Ok(Event::PlayerReady) => { false }
                 Ok(Event::PlayerStateChanged(state)) => {
-                    trace!("updated state");
                     current_state = state.state;
+                    true
                 }
                 Ok(Event::PlayerPositionChanged(position)) => {
-                    trace!("updated position");
                     current_position = position;
                     progress_bar.set_position(current_position.position as u64);
+                    true
                 }
-                Ok(Event::Error(error)) => { trace!("{error:?}"); }
-                Err(TryRecvError::Empty) => {}
+                Ok(Event::Error(error)) => { trace!("{error:?}"); false }
+                Err(TryRecvError::Empty) => { false }
                 Err(TryRecvError::Disconnected) => {
                     trace!("Event channel disconnected, Player stopped working. Exiting.");
                     break;
                 }
+            };
+
+            if data_updated {
+                progress_bar.set_message(format!("{} [{}]", current_state, FormattedDuration(current_position.time_position)));
             }
-
-            // The dialog blocks the loop...
-            let selection = Select::with_theme(&ColorfulTheme::default())
-                .items(&Command::as_vec())
-                .default(0)
-                .report(true)
-                .clear(true)
-                .interact_on_opt(&Term::stdout()).expect("inner").unwrap_or(SELECT_UNSUPPORTED_KEY_INPUT);
-
-            progress_bar.set_message(format!("{} [{}]", current_state, FormattedDuration(current_position.time_position)));
-            progress_bar.tick();
-
-            let command = Command::from(selection);
-            if let Err(_err) = cmd_sender.send(command) {
-                break;
-            }
-            if command == Command::Quit {
-                break;
+            else {
+                progress_bar.tick();
             }
         }
 
         player_handle.join().expect("Player thread failed.");
+        input_handle.join().expect("Input thread failed.");
     } else {
         let error = recording.unwrap_err();
         error!("Cannot play recording, because: {:?}", error);
