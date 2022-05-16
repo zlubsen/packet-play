@@ -7,7 +7,7 @@ use nom::IResult;
 use nom::multi::many1;
 use nom::number::complete::{le_u32, u16, u32};
 use nom::number::Endianness;
-use crate::model::{Errors};
+use crate::model::{Error};
 
 #[derive(Debug)]
 pub struct Pcap {
@@ -51,7 +51,7 @@ pub struct PcapPacketRecord {
 }
 
 impl TryFrom<File> for Pcap {
-    type Error = Errors;
+    type Error = Error;
 
     fn try_from(file: File) -> Result<Self, Self::Error> {
         let mut buf = Vec::<u8>::new();
@@ -61,7 +61,7 @@ impl TryFrom<File> for Pcap {
         match parse_pcap_file(&buf) {
             Ok((_input, pcap)) => { Ok(pcap) }
             Err(_err) => {
-                Err(Errors::ParsePcapError) }
+                Err(Error::ParsePcapError) }
         }
     }
 }
