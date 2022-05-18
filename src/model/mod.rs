@@ -94,10 +94,10 @@ impl Event {
     }
 
     pub(crate) fn position_event(current_pos: usize, max_pos: usize, current_time:Duration, total_time: Duration) -> Self {
-        // This function increases the positions with +1 to compensate for 0-based vec indexing.
+        // This function increases the position with +1 to compensate for 0-based vec indexing.
         Event::PlayerPositionChanged(PositionChange{
             position: current_pos+1,
-            max_position: max_pos+1,
+            max_position: max_pos,
             time_position: current_time,
             time_total: total_time,
         })

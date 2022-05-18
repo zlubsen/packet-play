@@ -36,6 +36,7 @@ pub(crate) fn run_cli(cli: Cli, recording: Pcap) {
     progress_bar.set_draw_rate(10);
 
     // TODO handle errors on creation of player
+    // Spawn thread for the Player
     let player_handle = match Player::builder()
         .recording(Recording::PCAP(recording))
         .destination(cli.destination)
@@ -47,6 +48,7 @@ pub(crate) fn run_cli(cli: Cli, recording: Pcap) {
         Ok(handle) => { handle }
         Err(err) => { error!("{err:?}"); exit(ERROR_CREATE_PLAYER); }
     };
+    // Spawn thread for the user's input (which blocks and should not stall the Player or progress bar)
     let input_handle = thread::spawn(move || {
         loop {
             let selection = Select::with_theme(&ColorfulTheme::default())
@@ -66,6 +68,7 @@ pub(crate) fn run_cli(cli: Cli, recording: Pcap) {
             }
         }
     });
+    // Wait for Player to be initialised
     loop {
         match event_receiver.recv_timeout(Duration::from_secs(PLAYER_STARTUP_TIMEOUT_MS)) {
             Ok(event) => {
