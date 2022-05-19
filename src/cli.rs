@@ -62,10 +62,7 @@ pub(crate) fn run_cli(cli: Cli, recording: Pcap) {
             if let Err(_err) = input_cmd_sender.send(command) {
                 break;
             }
-            if command == Command::Quit {
-                let _ = input_event_sender.send(Event::QuitCommanded);
-                break;
-            }
+            if command == Command::Quit { break; }
         }
     });
     // Wait for Player to be initialised

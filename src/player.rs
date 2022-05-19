@@ -160,6 +160,7 @@ impl Player {
                 PlayerState::Paused => { /*if terminal_synced { self.progress_bar.tick() }*/ } // no-op
                 PlayerState::Finished => { /*if terminal_synced { self.progress_bar.tick() }*/ } // no-op
                 PlayerState::Quit => {
+                    let _ = self.event_tx.send(Event::QuitCommanded);
                     break;
                 }
             }

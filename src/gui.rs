@@ -17,7 +17,6 @@ pub(crate) fn run_gui(cli : Cli, recording: Pcap) {
 
     // TODO handle errors on creation of player
     // Spawn thread for the Player
-    // TODO figure out how to join on the thread
     let _player_handle = match Player::builder()
         .recording(Recording::PCAP(recording))
         .destination(cli.destination)
@@ -110,8 +109,8 @@ impl eframe::App for GuiApp {
                     .animate(self.current_state == PlayerState::Playing));
 
             });
-            ui.label(format!("[{}/{}]", self.current_position.position, self.current_position.max_position));
-            ui.label(format!("[ {:?} / {:?} ]", self.current_position.time_position, self.current_position.time_total));
+            ui.label(format!("Packets: [{}/{}]", self.current_position.position, self.current_position.max_position));
+            ui.label(format!("Time: [ {} / {} ]", indicatif::FormattedDuration(self.current_position.time_position), indicatif::FormattedDuration(self.current_position.time_total)));
 
             ui.horizontal(|ui| {
                 if ui.add_enabled(
@@ -133,24 +132,23 @@ impl eframe::App for GuiApp {
             ui.label(message.unwrap_or("".to_string()));
         });
     }
+
+    fn on_exit(&mut self, _gl: &eframe::glow::Context) {
+        // Send Quit command to Player
+        let _ = self.cmd_sender.send(Command::Quit);
+        // Wait for player to shutdown
+        loop {
+            if let Ok(Event::QuitCommanded) = self.event_receiver.try_recv() {
+                break;
+            }
+        }
+    }
 }
 
 fn window_options() -> NativeOptions {
     NativeOptions {
-        always_on_top: false,
-        maximized: false,
         decorated: true,
-        drag_and_drop_support: false,
-        icon_data: None,
-        initial_window_pos: None,
         initial_window_size: Some(egui::Vec2::new(500f32,150f32)),
-        min_window_size: None,
-        max_window_size: None,
-        resizable: false,
-        transparent: false,
-        vsync: false,
-        multisampling: 0,
-        depth_buffer: 0,
-        stencil_buffer: 0
+        ..Default::default()
     }
 }
