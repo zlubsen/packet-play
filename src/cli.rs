@@ -26,7 +26,6 @@ pub(crate) fn run_cli(cli: Cli, recording: Pcap) {
     let (cmd_sender, cmd_receiver) = mpsc::channel();
     let input_cmd_sender = cmd_sender.clone();
     let (event_sender, event_receiver) = mpsc::channel();
-    let input_event_sender = event_sender.clone();
 
     let progress_bar = ProgressBar::new(recording.packets.len() as u64);
 
